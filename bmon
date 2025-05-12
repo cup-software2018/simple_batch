@@ -1,0 +1,63 @@
+#!/usr/bin/env python
+
+# batchmonitor.py
+
+import os
+import json
+import time
+import config
+
+def load_status():
+    if not os.path.exists(config.STATUS_FILE):
+        print("[Monitor] Status file not found.")
+        return None
+    try:
+        with open(config.STATUS_FILE, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[Monitor] Failed to read status file: {e}")
+        return None
+
+def get_priority(status):
+    if status == "Running":
+        return 0
+    if status == "Pending":
+        return 1
+    if status == "Done":
+        return 2
+    if status == "Failed":
+        return 3
+    if status == "Killed":
+        return 4
+    return 5  # Unknown status
+
+def display_status(status):
+    print("=== Batch System Monitor ===")
+    print(f"Pending: {status.get('pending', 0)}")
+    print(f"Running: {status.get('running', 0)}")
+    print(f"Done   : {status.get('done', 0)}")
+    print(f"Failed : {status.get('failed', 0)}\n")
+
+    print("Job List:")
+    print("-" * 80)
+
+    jobs = status.get('jobs', [])
+    jobs.sort(key=lambda job: (get_priority(job['status']), job['name']))
+
+    for job in jobs:
+        cpu_usage = job.get('cpu_usage', 0.0)
+        memory_mb = job.get('memory_mb', 0.0)
+        print(f"{job['name']:<40} {job['status']:<10} CPU: {cpu_usage:>5.1f}% Mem: {memory_mb:>6.1f}MB")
+    
+    print("-" * 80)
+    print(f"Snapshot at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+def main():
+    status = load_status()
+    if status:
+        display_status(status)
+    else:
+        print("[Monitor] No status to display.")
+
+if __name__ == "__main__":
+    main()

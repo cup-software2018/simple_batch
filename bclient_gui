@@ -1,0 +1,128 @@
+#!/usr/bin/env python
+
+# batchclient_gui.py
+
+import sys
+import os
+import time
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton,
+    QSpinBox, QFileDialog, QVBoxLayout, QHBoxLayout, QMessageBox, QTextEdit
+)
+import config
+
+def submit_jobs(job_base_name, first_id, last_id, script_abs_path, script_args, log_window):
+    if not os.path.exists(config.JOB_REQUEST_FOLDER):
+        os.makedirs(config.JOB_REQUEST_FOLDER)
+
+    for job_id in range(first_id, last_id + 1):
+        timestamp = int(time.time() * 1000)
+        formatted_id = f"{job_id:0{config.JOB_ID_FORMAT_WIDTH}d}"
+        filename = f"{job_base_name}_{formatted_id}_{timestamp}.txt"
+        filepath = os.path.join(config.JOB_REQUEST_FOLDER, filename)
+
+        command_line = f"{script_abs_path} {job_id} {script_args}".strip()
+
+        with open(filepath, 'w') as f:
+            f.write(command_line + '\n')
+
+        log_window.append(f"Submitted: {filename}")
+
+class BatchClientGUI(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Batch Client GUI")
+        self.init_ui()
+
+        self.resize(600, 400)
+        self.setMinimumSize(400, 300)
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+
+        # Job Base Name
+        self.job_name_input = QLineEdit()
+        layout.addWidget(QLabel("Job Base Name:"))
+        layout.addWidget(self.job_name_input)
+
+        # First ID and Last ID
+        id_layout = QHBoxLayout()
+        self.first_id_input = QSpinBox()
+        self.first_id_input.setMinimum(1)
+        self.first_id_input.setMaximum(999999)
+        self.last_id_input = QSpinBox()
+        self.last_id_input.setMinimum(1)
+        self.last_id_input.setMaximum(999999)
+        id_layout.addWidget(QLabel("First ID:"))
+        id_layout.addWidget(self.first_id_input)
+        id_layout.addWidget(QLabel("Last ID:"))
+        id_layout.addWidget(self.last_id_input)
+        layout.addLayout(id_layout)
+
+        # Script Path
+        script_layout = QHBoxLayout()
+        self.script_path_input = QLineEdit()
+        browse_button = QPushButton("Browse...")
+        browse_button.clicked.connect(self.browse_script)
+        script_layout.addWidget(QLabel("Script File:"))
+        script_layout.addWidget(self.script_path_input)
+        script_layout.addWidget(browse_button)
+        layout.addLayout(script_layout)
+
+        # Script Arguments
+        self.script_args_input = QLineEdit()
+        layout.addWidget(QLabel("Script Arguments:"))
+        layout.addWidget(self.script_args_input)
+
+        # Submit Button
+        submit_button = QPushButton("Submit Jobs")
+        submit_button.clicked.connect(self.submit)
+        layout.addWidget(submit_button)
+
+        # Log Window
+        self.log_window = QTextEdit()
+        self.log_window.setReadOnly(True)
+        layout.addWidget(QLabel("Submit Log:"))
+        layout.addWidget(self.log_window)
+
+        self.setLayout(layout)
+
+    def browse_script(self):
+        file_dialog = QFileDialog(self)
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        if file_dialog.exec_():
+            filenames = file_dialog.selectedFiles()
+            if filenames:
+                self.script_path_input.setText(os.path.abspath(filenames[0]))
+
+    def submit(self):
+        job_base_name = self.job_name_input.text().strip()
+        first_id = self.first_id_input.value()
+        last_id = self.last_id_input.value()
+        script_path = self.script_path_input.text().strip()
+        script_args = self.script_args_input.text().strip()
+
+        if not job_base_name or not script_path:
+            QMessageBox.warning(self, "Error", "Please fill in all fields.")
+            return
+
+        if not os.path.isfile(script_path):
+            QMessageBox.warning(self, "Error", "Script file not found.")
+            return
+
+        if first_id > last_id:
+            QMessageBox.warning(self, "Error", "First ID must be less than or equal to Last ID.")
+            return
+
+        script_abs_path = os.path.abspath(script_path)
+
+        self.log_window.clear()
+        submit_jobs(job_base_name, first_id, last_id, script_abs_path, script_args, self.log_window)
+
+        QMessageBox.information(self, "Success", f"Submitted jobs {first_id} to {last_id}.")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    gui = BatchClientGUI()
+    gui.show()
+    sys.exit(app.exec_())

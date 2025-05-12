@@ -1,0 +1,196 @@
+#!/usr/bin/env python
+
+# batchmanager.py
+
+import os
+import time
+import json
+
+import config
+from bjob import Job
+
+class BatchManager:
+    def __init__(self):
+        self.pending_jobs = []
+        self.running_jobs = []
+        self.done_jobs = []
+        self.failed_jobs = []
+
+    def load_new_jobs(self):
+        if not os.path.exists(config.JOB_REQUEST_FOLDER):
+            os.makedirs(config.JOB_REQUEST_FOLDER)
+
+        files = sorted(os.listdir(config.JOB_REQUEST_FOLDER))
+        for filename in files:
+            filepath = os.path.join(config.JOB_REQUEST_FOLDER, filename)
+            if not filename.endswith(".txt"):
+                continue
+
+            with open(filepath, 'r') as f:
+                line = f.readline().strip()
+
+            if not line:
+                continue
+
+            parts = line.split()
+            if len(parts) < 2:
+                print(f"[BatchManager] Invalid job file: {filename}")
+                continue
+
+            script_path = parts[0]
+            job_id = parts[1]
+            extra_args = parts[2:]
+
+            job_name = os.path.splitext(filename)[0]
+            job = Job(name=job_name, script_path=script_path, job_id=job_id, extra_args=extra_args)
+            self.pending_jobs.append(job)
+            print(f"[BatchManager] Loaded job: {job_name}")
+
+            os.remove(filepath)
+
+        # Sort pending jobs by job_id numerically
+        self.pending_jobs.sort(key=lambda job: int(job.job_id))
+
+    def load_kill_requests(self):
+        if not os.path.exists(config.KILL_REQUEST_FOLDER):
+            os.makedirs(config.KILL_REQUEST_FOLDER)
+
+        files = sorted(os.listdir(config.KILL_REQUEST_FOLDER))
+        for filename in files:
+            filepath = os.path.join(config.KILL_REQUEST_FOLDER, filename)
+            if not filename.endswith(".txt"):
+                continue
+
+            with open(filepath, 'r') as f:
+                line = f.readline().strip()
+
+            if not line:
+                continue
+
+            # Handle special KILLALL
+            if line == "KILLALL":
+                print("[BatchManager] KILLALL request received!")
+
+                while self.pending_jobs:
+                    job = self.pending_jobs.pop()
+                    job.status = "Killed"
+                    job.finished_time = time.time()
+                    self.failed_jobs.append(job)
+                    print(f"[BatchManager] Killed pending job: {job.name}")
+
+                while self.running_jobs:
+                    job = self.running_jobs.pop()
+                    try:
+                        job.process.terminate()
+                        job.process.wait()
+                    except Exception as e:
+                        print(f"[BatchManager] Failed to terminate {job.name}: {e}")
+                    job.status = "Killed"
+                    job.finished_time = time.time()
+                    self.failed_jobs.append(job)
+                    print(f"[BatchManager] Killed running job: {job.name}")
+
+                os.remove(filepath)
+                continue
+
+            # Handle normal kill
+            parts = line.split()
+            if len(parts) != 2:
+                print(f"[BatchManager] Invalid kill request format: {filename}")
+                continue
+
+            kill_base_name, kill_job_id = parts
+            print(f"[BatchManager] Kill request: {kill_base_name} {kill_job_id}")
+
+            killed = False
+
+            for job in self.pending_jobs:
+                if job.name.startswith(kill_base_name) and job.job_id == kill_job_id:
+                    self.pending_jobs.remove(job)
+                    job.status = "Killed"
+                    job.finished_time = time.time()
+                    self.failed_jobs.append(job)
+                    print(f"[BatchManager] Killed pending job: {job.name}")
+                    killed = True
+                    break
+
+            for job in self.running_jobs:
+                if job.name.startswith(kill_base_name) and job.job_id == kill_job_id:
+                    try:
+                        job.process.terminate()
+                        job.process.wait()
+                    except Exception as e:
+                        print(f"[BatchManager] Failed to terminate {job.name}: {e}")
+                    self.running_jobs.remove(job)
+                    job.status = "Killed"
+                    job.finished_time = time.time()
+                    self.failed_jobs.append(job)
+                    print(f"[BatchManager] Killed running job: {job.name}")
+                    killed = True
+                    break
+
+            if not killed:
+                print(f"[BatchManager] No matching job found to kill: {kill_base_name} {kill_job_id}")
+
+            os.remove(filepath)
+
+    def start_jobs(self):
+        while self.pending_jobs and len(self.running_jobs) < config.MAX_RUNNING_JOBS:
+            job = self.pending_jobs.pop(0)
+            job.run_async()
+            self.running_jobs.append(job)
+
+    def check_running_jobs(self):
+        still_running = []
+        for job in self.running_jobs:
+            if job.is_finished():
+                if job.status == 'Done':
+                    self.done_jobs.append(job)
+                else:
+                    self.failed_jobs.append(job)
+            else:
+                still_running.append(job)
+        self.running_jobs = still_running
+
+    def clean_old_finished_jobs(self):
+        now = time.time()
+        self.done_jobs = [job for job in self.done_jobs if (now - job.finished_time) < config.CLEANUP_TIMEOUT]
+        self.failed_jobs = [job for job in self.failed_jobs if (now - job.finished_time) < config.CLEANUP_TIMEOUT]
+
+    def update_status(self):
+        for job in self.running_jobs:
+            job.update_resource_usage()
+
+        status = {
+            "pending": len(self.pending_jobs),
+            "running": len(self.running_jobs),
+            "done": len(self.done_jobs),
+            "failed": len(self.failed_jobs),
+            "jobs": []
+        }
+
+        for job in self.pending_jobs + self.running_jobs + self.done_jobs + self.failed_jobs:
+            status["jobs"].append({
+                "name": job.name,
+                "status": job.status,
+                "cpu_usage": round(job.cpu_usage, 1),
+                "memory_mb": round(job.memory_mb, 1)
+            })
+
+        with open(config.STATUS_FILE, 'w') as f:
+            json.dump(status, f, indent=2)
+
+    def run(self):
+        print("[BatchManager] Starting batch manager daemon...")
+        while True:
+            self.load_new_jobs()
+            self.load_kill_requests()
+            self.check_running_jobs()
+            self.start_jobs()
+            self.clean_old_finished_jobs()
+            self.update_status()
+            time.sleep(1)
+
+if __name__ == "__main__":
+    manager = BatchManager()
+    manager.run()

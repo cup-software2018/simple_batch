@@ -1,0 +1,68 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import time
+import glob
+import config
+
+
+def find_script_path(partial_path):
+    # Try to find matching file
+    matches = glob.glob(f"{partial_path}*")
+
+    if len(matches) == 1:
+        # Unique match
+        return os.path.abspath(matches[0])
+    elif len(matches) == 0:
+        print(f"Error: No script file matches: {partial_path}")
+        sys.exit(1)
+    else:
+        print(f"Error: Multiple matches for {partial_path}: {matches}")
+        sys.exit(1)
+
+
+def submit_job(job_base_name, script_abs_path, job_id, *args):
+    if not os.path.exists(config.JOB_REQUEST_FOLDER):
+        os.makedirs(config.JOB_REQUEST_FOLDER)
+
+    timestamp = int(time.time() * 1000)
+    filename = f"{job_base_name}_{int(job_id):06d}_{timestamp}.txt"
+    filepath = os.path.join(config.JOB_REQUEST_FOLDER, filename)
+
+    command_line = script_abs_path + ' ' + str(job_id) + ' ' + ' '.join(args)
+
+    with open(filepath, 'w') as f:
+        f.write(command_line + '\n')
+
+    print(f"[Client] Job {job_id} submitted: {filepath}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 5:
+        print(
+            "Usage: python3 batchclient.py <job_name> <first_id> <last_id> <script_path> [script_args...]")
+        sys.exit(1)
+
+    job_base_name = sys.argv[1]
+
+    try:
+        first_job_id = int(sys.argv[2])
+        last_job_id = int(sys.argv[3])
+    except ValueError:
+        print("Error: first_id and last_id must be integers.")
+        sys.exit(1)
+
+    if first_job_id > last_job_id:
+        print("Error: first_id must be <= last_id")
+        sys.exit(1)
+
+    given_script_path = sys.argv[4]
+
+    # Find and complete the script path
+    script_abs_path = find_script_path(given_script_path)
+
+    script_args = sys.argv[5:]
+
+    for job_id in range(first_job_id, last_job_id + 1):
+        submit_job(job_base_name, script_abs_path, job_id, *script_args)
