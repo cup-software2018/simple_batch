@@ -3,10 +3,65 @@
 # batchmonitor.py
 
 import os
+import sys
 import json
 import time
 import config
 
+# ── ANSI colors ───────────────────────────────────────────────────────────────
+_USE_COLOR = sys.stdout.isatty()
+
+def _c(code, text):
+    return f'\033[{code}m{text}\033[0m' if _USE_COLOR else text
+
+def _color(status, text):
+    colors = {
+        'Running': '92',   # bright green
+        'Pending': '93',   # bright yellow
+        'Done':    '96',   # bright cyan
+        'Failed':  '91',   # bright red
+        'Killed':  '95',   # bright magenta
+    }
+    return _c(colors.get(status, '0'), text)
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+def _short_name(name):
+    """Strip trailing _<timestamp> from job name."""
+    parts = name.rsplit('_', 1)
+    if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) >= 10:
+        return parts[0]
+    return name
+
+def _progress_bar(done, running, pending, failed, killed, width=40):
+    total = done + running + pending + failed + killed
+    if total == 0:
+        return '[' + ' ' * width + ']'
+
+    def _seg(count, char, code):
+        n = round(count / total * width)
+        return _c(code, char * n) if _USE_COLOR else char * n
+
+    bar = (
+        _seg(done,    '█', '96') +
+        _seg(running, '█', '92') +
+        _seg(pending, '░', '93') +
+        _seg(failed,  '█', '91') +
+        _seg(killed,  '█', '95')
+    )
+    # pad to exact width (rounding may leave gaps)
+    filled = done + running + pending + failed + killed
+    bar_plain = '█' * round(done/total*width) + \
+                '█' * round(running/total*width) + \
+                '░' * round(pending/total*width) + \
+                '█' * round(failed/total*width) + \
+                '█' * round(killed/total*width)
+    pad = width - len(bar_plain)
+    return '[' + bar + ' ' * max(pad, 0) + ']'
+
+def _priority(status):
+    return {'Running': 0, 'Pending': 1, 'Done': 2, 'Failed': 3, 'Killed': 4}.get(status, 5)
+
+# ── I/O ───────────────────────────────────────────────────────────────────────
 def load_status():
     if not os.path.exists(config.STATUS_FILE):
         print("[Monitor] Status file not found.")
@@ -18,46 +73,81 @@ def load_status():
         print(f"[Monitor] Failed to read status file: {e}")
         return None
 
-def get_priority(status):
-    if status == "Running":
-        return 0
-    if status == "Pending":
-        return 1
-    if status == "Done":
-        return 2
-    if status == "Failed":
-        return 3
-    if status == "Killed":
-        return 4
-    return 5  # Unknown status
-
+# ── display ───────────────────────────────────────────────────────────────────
 def display_status(status):
-    print("=== Batch System Monitor ===")
-    print(f"Pending: {status.get('pending', 0)}")
-    print(f"Running: {status.get('running', 0)}")
-    print(f"Done   : {status.get('done', 0)}")
-    print(f"Failed : {status.get('failed', 0)}\n")
+    pending = status.get('pending', 0)
+    running = status.get('running', 0)
+    done    = status.get('done',    0)
+    failed  = status.get('failed',  0)
+    killed  = status.get('killed',  0)
+    total   = pending + running + done + failed + killed
 
-    print("Job List:")
-    print("-" * 80)
+    W = 80
+    print(_c('1', '═' * W))
+    print(_c('1', ' Batch System Monitor'.center(W)))
+    print(_c('1', '═' * W))
 
-    jobs = status.get('jobs', [])
-    jobs.sort(key=lambda job: (get_priority(job['status']), job['name']))
+    # Summary line
+    print(
+        f"  {_color('Running', f'Running: {running}'):<22}"
+        f"  {_color('Pending', f'Pending: {pending}'):<22}"
+        f"  {_color('Done',    f'Done: {done}'):<20}"
+        f"  {_color('Failed',  f'Failed: {failed}')}"
+    )
+
+    # Progress bar
+    bar = _progress_bar(done, running, pending, failed, killed, width=W - 2)
+    pct = round((done + failed + killed) / total * 100) if total else 0
+    print(f"{bar}  {pct}%")
+    print('─' * W)
+
+    # Header
+    print(f"  {'Job':<35} {'Status':<10} {'CPU':>7}  {'Mem':>8}")
+    print('─' * W)
+
+    jobs = sorted(status.get('jobs', []),
+                  key=lambda j: (_priority(j['status']), j['name']))
 
     for job in jobs:
-        cpu_usage = job.get('cpu_usage', 0.0)
-        memory_mb = job.get('memory_mb', 0.0)
-        print(f"{job['name']:<40} {job['status']:<10} CPU: {cpu_usage:>5.1f}% Mem: {memory_mb:>6.1f}MB")
-    
-    print("-" * 80)
-    print(f"Snapshot at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        name   = _short_name(job['name'])
+        st     = job['status']
+        cpu    = job.get('cpu_usage', 0.0)
+        mem    = job.get('memory_mb', 0.0)
+        cpu_s  = f'{cpu:5.1f}%'
+        mem_s  = f'{mem:6.1f}MB'
+        print(f"  {_color(st, f'{name:<35}')} {_color(st, f'{st:<10}')} {cpu_s:>7}  {mem_s:>8}")
 
+    print('─' * W)
+    print(f"  Total: {total}   {_c('2', time.strftime('%Y-%m-%d %H:%M:%S'))}")
+
+# ── main ──────────────────────────────────────────────────────────────────────
 def main():
-    status = load_status()
-    if status:
-        display_status(status)
+    watch_interval = None
+    args = sys.argv[1:]
+    if args and args[0] in ('-w', '--watch'):
+        try:
+            watch_interval = float(args[1]) if len(args) > 1 else 2.0
+        except ValueError:
+            watch_interval = 2.0
+
+    if watch_interval is None:
+        status = load_status()
+        if status:
+            display_status(status)
+        else:
+            print("[Monitor] No status to display.")
     else:
-        print("[Monitor] No status to display.")
+        try:
+            while True:
+                print('\033[2J\033[H', end='')
+                status = load_status()
+                if status:
+                    display_status(status)
+                else:
+                    print("[Monitor] No status to display.")
+                time.sleep(watch_interval)
+        except KeyboardInterrupt:
+            pass
 
 if __name__ == "__main__":
     main()

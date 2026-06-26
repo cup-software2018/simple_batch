@@ -1,0 +1,17 @@
+# simple_batch configuration
+
+# Base directory for all runtime files (job_requests, logs, status, etc.)
+# Override at runtime with the SIMPLE_BATCH_DIR environment variable.
+base_dir: ~/utils/batch
+
+# Maximum number of jobs that can run concurrently.
+# Leave as null (or omit) for auto-detection:
+#   Intel consumer (including hybrid P/E-core): 100% of P-cores
+#   Intel Xeon: 90% of physical cores
+max_running_jobs: null
+
+# Seconds to keep finished (done/failed/killed) jobs in the status view
+cleanup_timeout: 60
+
+# Zero-padded width of job IDs in filenames  (6 → 000001)
+job_id_format_width: 6

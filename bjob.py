@@ -54,7 +54,8 @@ class Job:
     def update_resource_usage(self):
         if self.psutil_proc and self.process and self.status == 'Running':
             try:
-                self.cpu_usage = self.psutil_proc.cpu_percent(interval=1.0)
+                # interval=None returns usage since last call — non-blocking
+                self.cpu_usage = self.psutil_proc.cpu_percent(interval=None)
                 self.memory_mb = self.psutil_proc.memory_info().rss / (1024 * 1024)
             except psutil.NoSuchProcess:
                 pass

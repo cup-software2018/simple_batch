@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import glob
+import shlex
 import config
 
 
@@ -30,7 +31,7 @@ def submit_job(job_base_name, script_abs_path, job_id, *args):
     filename = f"{job_base_name}_{int(job_id):06d}_{timestamp}.txt"
     filepath = os.path.join(config.JOB_REQUEST_FOLDER, filename)
 
-    command_line = script_abs_path + ' ' + str(job_id) + ' ' + ' '.join(args)
+    command_line = ' '.join([shlex.quote(script_abs_path), str(job_id)] + [shlex.quote(a) for a in args])
 
     with open(filepath, 'w') as f:
         f.write(command_line + '\n')
@@ -41,7 +42,20 @@ def submit_job(job_base_name, script_abs_path, job_id, *args):
 if __name__ == "__main__":
     if len(sys.argv) < 5:
         print(
-            "Usage: python3 batchclient.py <job_name> <first_id> <last_id> <script_path> [script_args...]")
+            "Usage: bclient <job_name> <first_id> <last_id> <script> [args...]\n"
+            "\n"
+            "  job_name   label for this job group (e.g. analysis)\n"
+            "  first_id   first job ID (integer)\n"
+            "  last_id    last job ID  (integer, inclusive)\n"
+            "  script     path to the executable script\n"
+            "  args       extra arguments passed to every job\n"
+            "\n"
+            "The script is called as:  <script> <job_id> [args...]\n"
+            "\n"
+            "Examples:\n"
+            "  bclient analysis 1 100 ./run.sh\n"
+            '  bclient recon 1 500 ./reconstruct.py "--config setup.yaml"\n'
+        )
         sys.exit(1)
 
     job_base_name = sys.argv[1]

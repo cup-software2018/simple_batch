@@ -5,15 +5,21 @@
 import sys
 import os
 import time
-from PyQt5.QtWidgets import (
+import shlex
+from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton,
-    QSpinBox, QFileDialog, QVBoxLayout, QHBoxLayout, QMessageBox, QTextEdit
+    QSpinBox, QFileDialog, QVBoxLayout, QHBoxLayout,
+    QMessageBox, QTextEdit, QGroupBox, QSizePolicy, QStyleFactory
 )
+from PySide6.QtGui import QFont
 import config
+
 
 def submit_jobs(job_base_name, first_id, last_id, script_abs_path, script_args, log_window):
     if not os.path.exists(config.JOB_REQUEST_FOLDER):
         os.makedirs(config.JOB_REQUEST_FOLDER)
+
+    extra = shlex.split(script_args) if script_args else []
 
     for job_id in range(first_id, last_id + 1):
         timestamp = int(time.time() * 1000)
@@ -21,108 +27,159 @@ def submit_jobs(job_base_name, first_id, last_id, script_abs_path, script_args, 
         filename = f"{job_base_name}_{formatted_id}_{timestamp}.txt"
         filepath = os.path.join(config.JOB_REQUEST_FOLDER, filename)
 
-        command_line = f"{script_abs_path} {job_id} {script_args}".strip()
-
+        command_line = ' '.join(
+            [shlex.quote(script_abs_path), str(job_id)] + [shlex.quote(a) for a in extra]
+        )
         with open(filepath, 'w') as f:
             f.write(command_line + '\n')
 
-        log_window.append(f"Submitted: {filename}")
+        log_window.append(f"[{time.strftime('%H:%M:%S')}] Submitted: {filename}")
+
 
 class BatchClientGUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Batch Client GUI")
-        self.init_ui()
+        self.setWindowTitle("Simple Batch Client")
+        self.setMinimumSize(520, 480)
+        self.resize(620, 540)
+        self._init_ui()
 
-        self.resize(600, 400)
-        self.setMinimumSize(400, 300)
+    def _init_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
 
-    def init_ui(self):
-        layout = QVBoxLayout()
+        # ── Job Settings ──────────────────────────────────────────────────────
+        job_group = QGroupBox("Job Settings")
+        job_layout = QVBoxLayout(job_group)
+        job_layout.setSpacing(6)
 
-        # Job Base Name
+        job_layout.addWidget(QLabel("Job Name:"))
         self.job_name_input = QLineEdit()
-        layout.addWidget(QLabel("Job Base Name:"))
-        layout.addWidget(self.job_name_input)
+        self.job_name_input.setPlaceholderText("e.g.  analysis")
+        job_layout.addWidget(self.job_name_input)
 
-        # First ID and Last ID
-        id_layout = QHBoxLayout()
+        id_row = QHBoxLayout()
+        id_row.setSpacing(12)
         self.first_id_input = QSpinBox()
         self.first_id_input.setMinimum(1)
         self.first_id_input.setMaximum(999999)
         self.last_id_input = QSpinBox()
         self.last_id_input.setMinimum(1)
         self.last_id_input.setMaximum(999999)
-        id_layout.addWidget(QLabel("First ID:"))
-        id_layout.addWidget(self.first_id_input)
-        id_layout.addWidget(QLabel("Last ID:"))
-        id_layout.addWidget(self.last_id_input)
-        layout.addLayout(id_layout)
+        id_row.addWidget(QLabel("First ID:"))
+        id_row.addWidget(self.first_id_input)
+        id_row.addWidget(QLabel("Last ID:"))
+        id_row.addWidget(self.last_id_input)
+        id_row.addStretch()
+        job_layout.addLayout(id_row)
+        root.addWidget(job_group)
 
-        # Script Path
-        script_layout = QHBoxLayout()
-        self.script_path_input = QLineEdit()
-        browse_button = QPushButton("Browse...")
-        browse_button.clicked.connect(self.browse_script)
+        # ── Script ────────────────────────────────────────────────────────────
+        script_group = QGroupBox("Script")
+        script_layout = QVBoxLayout(script_group)
+        script_layout.setSpacing(6)
+
         script_layout.addWidget(QLabel("Script File:"))
-        script_layout.addWidget(self.script_path_input)
-        script_layout.addWidget(browse_button)
-        layout.addLayout(script_layout)
+        path_row = QHBoxLayout()
+        path_row.setSpacing(6)
+        self.script_path_input = QLineEdit()
+        self.script_path_input.setPlaceholderText("/path/to/script")
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setFixedWidth(90)
+        browse_btn.clicked.connect(self._browse_script)
+        path_row.addWidget(self.script_path_input)
+        path_row.addWidget(browse_btn)
+        script_layout.addLayout(path_row)
 
-        # Script Arguments
+        script_layout.addWidget(QLabel("Arguments:"))
         self.script_args_input = QLineEdit()
-        layout.addWidget(QLabel("Script Arguments:"))
-        layout.addWidget(self.script_args_input)
+        self.script_args_input.setPlaceholderText('e.g.  --config setup.yaml')
+        script_layout.addWidget(self.script_args_input)
+        root.addWidget(script_group)
 
-        # Submit Button
-        submit_button = QPushButton("Submit Jobs")
-        submit_button.clicked.connect(self.submit)
-        layout.addWidget(submit_button)
+        # ── Submit ────────────────────────────────────────────────────────────
+        self.submit_btn = QPushButton("Submit Jobs")
+        self.submit_btn.setMinimumHeight(36)
+        self.submit_btn.setFont(QFont(self.font().family(), -1, QFont.Weight.Bold))
+        self.submit_btn.clicked.connect(self._submit)
+        root.addWidget(self.submit_btn)
 
-        # Log Window
+        # ── Log ───────────────────────────────────────────────────────────────
+        log_group = QGroupBox("Submission Log")
+        log_layout = QVBoxLayout(log_group)
+        log_layout.setSpacing(4)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFixedWidth(60)
+        clear_btn.clicked.connect(lambda: self.log_window.clear())
+        log_header = QHBoxLayout()
+        log_header.addStretch()
+        log_header.addWidget(clear_btn)
+        log_layout.addLayout(log_header)
+
         self.log_window = QTextEdit()
         self.log_window.setReadOnly(True)
-        layout.addWidget(QLabel("Submit Log:"))
-        layout.addWidget(self.log_window)
+        self.log_window.setFont(QFont("Monospace", 10))
+        self.log_window.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        log_layout.addWidget(self.log_window)
+        root.addWidget(log_group)
 
-        self.setLayout(layout)
+    def _browse_script(self):
+        dlg = QFileDialog(self)
+        dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
+        if dlg.exec():
+            files = dlg.selectedFiles()
+            if files:
+                self.script_path_input.setText(os.path.abspath(files[0]))
 
-    def browse_script(self):
-        file_dialog = QFileDialog(self)
-        file_dialog.setFileMode(QFileDialog.ExistingFile)
-        if file_dialog.exec_():
-            filenames = file_dialog.selectedFiles()
-            if filenames:
-                self.script_path_input.setText(os.path.abspath(filenames[0]))
-
-    def submit(self):
+    def _submit(self):
         job_base_name = self.job_name_input.text().strip()
-        first_id = self.first_id_input.value()
-        last_id = self.last_id_input.value()
-        script_path = self.script_path_input.text().strip()
-        script_args = self.script_args_input.text().strip()
+        first_id      = self.first_id_input.value()
+        last_id       = self.last_id_input.value()
+        script_path   = self.script_path_input.text().strip()
+        script_args   = self.script_args_input.text().strip()
 
-        if not job_base_name or not script_path:
-            QMessageBox.warning(self, "Error", "Please fill in all fields.")
+        if not job_base_name:
+            QMessageBox.warning(self, "Missing field", "Job Name is required.")
             return
-
+        if not script_path:
+            QMessageBox.warning(self, "Missing field", "Script File is required.")
+            return
         if not os.path.isfile(script_path):
-            QMessageBox.warning(self, "Error", "Script file not found.")
+            QMessageBox.warning(self, "File not found", f"Script not found:\n{script_path}")
             return
-
         if first_id > last_id:
-            QMessageBox.warning(self, "Error", "First ID must be less than or equal to Last ID.")
+            QMessageBox.warning(self, "Invalid range", "First ID must be ≤ Last ID.")
             return
 
-        script_abs_path = os.path.abspath(script_path)
+        count = last_id - first_id + 1
+        self.submit_btn.setEnabled(False)
+        self.submit_btn.setText(f"Submitting {count} jobs…")
+        QApplication.processEvents()
 
-        self.log_window.clear()
-        submit_jobs(job_base_name, first_id, last_id, script_abs_path, script_args, self.log_window)
+        try:
+            submit_jobs(job_base_name, first_id, last_id,
+                        os.path.abspath(script_path), script_args, self.log_window)
+        finally:
+            self.submit_btn.setEnabled(True)
+            self.submit_btn.setText("Submit Jobs")
 
-        QMessageBox.information(self, "Success", f"Submitted jobs {first_id} to {last_id}.")
+        self.log_window.append(f"\n>>> {count} job(s) submitted  ({first_id} – {last_id})")
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # Use GTK3 style to follow the system GNOME theme if available.
+    # Install qt6-gtk-platformtheme (Fedora/RHEL) or qt6-style-plugins (Ubuntu)
+    # to enable full GNOME theme integration.
+    available = QStyleFactory.keys()
+    for style in ('gtk3', 'gtk2', 'fusion'):
+        if style in [s.lower() for s in available]:
+            app.setStyle(style)
+            break
+
     gui = BatchClientGUI()
     gui.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

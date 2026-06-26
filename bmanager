@@ -3,11 +3,52 @@
 # batchmanager.py
 
 import os
+import sys
 import time
 import json
+import fcntl
+import shlex
+import signal
 
 import config
 from bjob import Job
+
+_shutdown = False
+
+def _sigterm_handler(signum, frame):
+    global _shutdown
+    _shutdown = True
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
+signal.signal(signal.SIGINT,  _sigterm_handler)
+
+
+def daemonize():
+    # Fork 1: detach from parent so the shell gets its prompt back
+    if os.fork() > 0:
+        sys.exit(0)
+
+    os.setsid()
+
+    # Fork 2: prevent the daemon from ever reacquiring a terminal
+    if os.fork() > 0:
+        sys.exit(0)
+
+    # stdin → /dev/null
+    fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(fd, 0)
+    os.close(fd)
+
+    # stdout/stderr → log file
+    os.makedirs(os.path.dirname(config.LOG_FILE), exist_ok=True)
+    fd = os.open(config.LOG_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    os.close(fd)
+
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
 
 class BatchManager:
     def __init__(self):
@@ -32,7 +73,12 @@ class BatchManager:
             if not line:
                 continue
 
-            parts = line.split()
+            try:
+                parts = shlex.split(line)
+            except ValueError as e:
+                print(f"[BatchManager] Failed to parse job file {filename}: {e}")
+                continue
+
             if len(parts) < 2:
                 print(f"[BatchManager] Invalid job file: {filename}")
                 continue
@@ -105,7 +151,7 @@ class BatchManager:
             killed = False
 
             for job in self.pending_jobs:
-                if job.name.startswith(kill_base_name) and job.job_id == kill_job_id:
+                if job.name.startswith(kill_base_name + '_') and job.job_id == kill_job_id:
                     self.pending_jobs.remove(job)
                     job.status = "Killed"
                     job.finished_time = time.time()
@@ -115,7 +161,7 @@ class BatchManager:
                     break
 
             for job in self.running_jobs:
-                if job.name.startswith(kill_base_name) and job.job_id == kill_job_id:
+                if job.name.startswith(kill_base_name + '_') and job.job_id == kill_job_id:
                     try:
                         job.process.terminate()
                         job.process.wait()
@@ -177,20 +223,131 @@ class BatchManager:
                 "memory_mb": round(job.memory_mb, 1)
             })
 
-        with open(config.STATUS_FILE, 'w') as f:
+        tmp_path = config.STATUS_FILE + '.tmp'
+        with open(tmp_path, 'w') as f:
             json.dump(status, f, indent=2)
+        os.replace(tmp_path, config.STATUS_FILE)
+
+    def acquire_lock(self):
+        os.makedirs(os.path.dirname(config.LOCK_FILE), exist_ok=True)
+        self._lock_fd = open(config.LOCK_FILE, 'w')
+        try:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("[BatchManager] Another instance is already running. Exiting.")
+            sys.exit(1)
+        self._lock_fd.write(str(os.getpid()))
+        self._lock_fd.flush()
+
+    def _cleanup(self):
+        print("[BatchManager] Shutting down — terminating running jobs...", flush=True)
+        for job in self.running_jobs:
+            try:
+                job.process.terminate()
+                job.process.wait(timeout=5)
+            except Exception:
+                pass
+        print("[BatchManager] Done.", flush=True)
 
     def run(self):
-        print("[BatchManager] Starting batch manager daemon...")
-        while True:
-            self.load_new_jobs()
-            self.load_kill_requests()
-            self.check_running_jobs()
-            self.start_jobs()
-            self.clean_old_finished_jobs()
-            self.update_status()
-            time.sleep(1)
+        self.acquire_lock()
+        os.umask(0o022)  # ensure status.json and logs are world-readable
+        print(f"[BatchManager] Starting (PID: {os.getpid()})", flush=True)
+        try:
+            while not _shutdown:
+                self.load_new_jobs()
+                self.load_kill_requests()
+                self.check_running_jobs()
+                self.start_jobs()
+                self.clean_old_finished_jobs()
+                self.update_status()
+                time.sleep(1)
+        finally:
+            self._cleanup()
+
+
+# ── daemon control helpers ──────────────────────────────────────────────────
+
+def _read_pid():
+    try:
+        with open(config.LOCK_FILE, 'r') as f:
+            return int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def _is_running(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+# ── subcommands ─────────────────────────────────────────────────────────────
+
+def cmd_start():
+    pid = _read_pid()
+    if pid and _is_running(pid):
+        print(f"[BatchManager] Already running (PID: {pid})")
+        sys.exit(1)
+    print(f"[BatchManager] Starting daemon... (log: {config.LOG_FILE})")
+    daemonize()
+    BatchManager().run()
+
+
+def cmd_run():
+    BatchManager().run()
+
+
+def cmd_stop():
+    pid = _read_pid()
+    if not pid or not _is_running(pid):
+        print("[BatchManager] Not running.")
+        sys.exit(1)
+
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(20):
+        time.sleep(0.5)
+        if not _is_running(pid):
+            print(f"[BatchManager] Stopped (PID: {pid})")
+            return
+
+    print(f"[BatchManager] PID {pid} did not stop in time; sending SIGKILL")
+    os.kill(pid, signal.SIGKILL)
+
+
+def cmd_restart():
+    pid = _read_pid()
+    if pid and _is_running(pid):
+        cmd_stop()
+    cmd_start()
+
+
+def cmd_status():
+    pid = _read_pid()
+    if pid and _is_running(pid):
+        print(f"[BatchManager] Running (PID: {pid})")
+    else:
+        print("[BatchManager] Not running.")
+
+
+COMMANDS = {
+    'start':   cmd_start,
+    'stop':    cmd_stop,
+    'restart': cmd_restart,
+    'status':  cmd_status,
+    'run':     cmd_run,
+}
 
 if __name__ == "__main__":
-    manager = BatchManager()
-    manager.run()
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        print(f"Usage: python bmanager [{'|'.join(COMMANDS)}]")
+        print("  start   — start as background daemon")
+        print("  stop    — stop the running daemon")
+        print("  restart — restart the daemon")
+        print("  status  — check if daemon is running")
+        print("  run     — run in foreground (for debugging)")
+        sys.exit(1)
+
+    COMMANDS[sys.argv[1]]()
