@@ -183,7 +183,7 @@ class BatchManager:
     def start_jobs(self):
         while self.pending_jobs and len(self.running_jobs) < config.MAX_RUNNING_JOBS:
             job = self.pending_jobs.pop(0)
-            job.run_async()
+            job.run_async(log_dir=config.LOG_FOLDER)
             self.running_jobs.append(job)
 
     def check_running_jobs(self):
@@ -193,10 +193,18 @@ class BatchManager:
                 if job.status == 'Done':
                     self.done_jobs.append(job)
                 else:
+                    self._log_failure(job)
                     self.failed_jobs.append(job)
             else:
                 still_running.append(job)
         self.running_jobs = still_running
+
+    def _log_failure(self, job):
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        msg = f"[{ts}] [FAILED] {job.name}  exit_code={job.exit_code}"
+        if job.log_path:
+            msg += f"  log={job.log_path}"
+        print(msg, flush=True)
 
     def clean_old_finished_jobs(self):
         now = time.time()
@@ -220,7 +228,9 @@ class BatchManager:
                 "name": job.name,
                 "status": job.status,
                 "cpu_usage": round(job.cpu_usage, 1),
-                "memory_mb": round(job.memory_mb, 1)
+                "memory_mb": round(job.memory_mb, 1),
+                "exit_code": job.exit_code,
+                "log_path": job.log_path,
             })
 
         tmp_path = config.STATUS_FILE + '.tmp'

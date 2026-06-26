@@ -36,6 +36,29 @@ LOG_FOLDER          = os.path.join(BASE_DIR, 'logs')
 LOG_FILE            = os.path.join(LOG_FOLDER, 'bmanager.log')
 LOCK_FILE           = os.path.join(BASE_DIR, 'bmanager.lock')
 
+def _get_p_core_ids():
+    """Return sorted list of CPU IDs that belong to P-core clusters.
+
+    P-core clusters have ≤ 2 logical CPUs (Arrow Lake: 1, Alder/Raptor Lake: 2 with HT).
+    E-core clusters have 4.  Returns None when sysfs is unavailable or no
+    hybrid topology is detected (Xeon, AMD, etc.).
+    """
+    from collections import Counter
+    cpu_to_cluster = {}
+    for i in range(os.cpu_count() or 0):
+        try:
+            with open(f'/sys/devices/system/cpu/cpu{i}/topology/cluster_id') as _f:
+                cpu_to_cluster[i] = int(_f.read())
+        except OSError:
+            return None
+    if not cpu_to_cluster:
+        return None
+    cluster_sizes = Counter(cpu_to_cluster.values())
+    p_ids = sorted(cpu for cpu, cid in cpu_to_cluster.items()
+                   if cluster_sizes[cid] <= 2)
+    return p_ids if p_ids else None
+
+
 def _p_logical_from_sysfs():
     """Count logical CPUs on P-cores via sysfs cluster topology.
 
@@ -89,6 +112,9 @@ def _detect_max_jobs():
     #   HT off   → use physical cores
     return logical if logical > physical else physical
 
+
+# P-core CPU IDs for affinity pinning (None = not applicable / not detectable)
+P_CORE_IDS = _get_p_core_ids()
 
 # Tunable parameters
 _max_jobs_cfg = _cfg.get('max_running_jobs')

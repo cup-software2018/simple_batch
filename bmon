@@ -109,13 +109,22 @@ def display_status(status):
                   key=lambda j: (_priority(j['status']), j['name']))
 
     for job in jobs:
-        name   = _short_name(job['name'])
-        st     = job['status']
-        cpu    = job.get('cpu_usage', 0.0)
-        mem    = job.get('memory_mb', 0.0)
-        cpu_s  = f'{cpu:5.1f}%'
-        mem_s  = f'{mem:6.1f}MB'
-        print(f"  {_color(st, f'{name:<35}')} {_color(st, f'{st:<10}')} {cpu_s:>7}  {mem_s:>8}")
+        name     = _short_name(job['name'])
+        st       = job['status']
+        cpu      = job.get('cpu_usage', 0.0)
+        mem      = job.get('memory_mb', 0.0)
+        cpu_s    = f'{cpu:5.1f}%'
+        mem_s    = f'{mem:6.1f}MB'
+        exit_code = job.get('exit_code')
+        log_path  = job.get('log_path')
+
+        suffix = ''
+        if st == 'Failed' and exit_code is not None:
+            suffix = _color('Failed', f'  [exit={exit_code}]')
+            if log_path:
+                suffix += _c('2', f'  {log_path}')
+
+        print(f"  {_color(st, f'{name:<35}')} {_color(st, f'{st:<10}')} {cpu_s:>7}  {mem_s:>8}{suffix}")
 
     print('─' * W)
     print(f"  Total: {total}   {_c('2', time.strftime('%Y-%m-%d %H:%M:%S'))}")
